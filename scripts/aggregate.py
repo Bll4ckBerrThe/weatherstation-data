@@ -107,6 +107,16 @@ def f1():
                                 x.get("Q3") or x.get("Q2") or x.get("Q1") or ""] for x in q[0]["QualifyingResults"][:10]]
         except Exception as e:
             print("  F1 qualifying failed:", e)
+        # Sprint result of the next race's weekend (sprint weekends only), once it exists
+        if any(k == "SPR" for k, _ in nxt["sess"]):
+            try:
+                sp = get_json(f"{F1}/current/{nxt['r']}/sprint/?format=json")["MRData"]["RaceTable"]["Races"]
+                if sp:
+                    nxt["sprint"] = [[int(x["position"]), x["Driver"]["code"], x["Constructor"]["constructorId"],
+                                      (x.get("Time") or {}).get("time") or x["status"], float(x["points"])]
+                                     for x in sp[0]["SprintResults"][:8]]
+            except Exception as e:
+                print("  F1 sprint failed:", e)
 
     last = None
     try:
