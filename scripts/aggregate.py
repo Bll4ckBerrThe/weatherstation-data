@@ -12,7 +12,7 @@ the device parses them with a fixed schema (see the README).
 
 Standard library only, so it runs unchanged on GitHub Actions.  Usage:  python scripts/aggregate.py [f1|nhl|ski]...
 """
-import json, os, sys, time, urllib.request, datetime
+import json, os, sys, time, urllib.request, urllib.error, datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data")
@@ -25,6 +25,11 @@ def get_json(url, tries=3):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
                 return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404 or i == tries - 1:      # 404 = "doesn't exist", retrying won't help
+                raise
+            print(f"  retry {url}: {e}")
+            time.sleep(3 * (i + 1))
         except Exception as e:
             if i == tries - 1:
                 raise
@@ -170,8 +175,39 @@ def nhl():
     except Exception as e:
         print("  NHL scores failed:", e)
 
-    write("nhl.json", {"upd": now_utc(), "season": sched.get("currentSeason"),
-                       "standings": standings, "team": team, "scores": scores})
+    # Phase: "regular" (division table) / "playoffs" (bracket, live) / "final" (off-season: last
+    # season's finished bracket until the new regular season has games). The carousel endpoint
+    # lists every round with series letter, seeds and wins.
+    season = sched.get("currentSeason")
+    phase, bracket = "regular", None
+    games_played = sum(r[3] for r in standings)
+    cand = [(season, "playoffs")]
+    if not games_played:
+        cand.append((season - 10001, "final"))              # 20262027 -> 20252026
+    for sid, ph in cand:
+        try:
+            car = get_json(f"{NHL}/playoff-series/carousel/{sid}/")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue                                    # no playoffs for that season (yet)
+            print("  NHL playoffs check failed (treated as regular season):", e)
+            break
+        except Exception as e:
+            print("  NHL playoffs check failed (treated as regular season):", e)
+            break
+        if True:
+            rounds = car.get("rounds") or []
+            if rounds:
+                phase = ph
+                bracket = {"season": sid, "round": car.get("currentRound"),
+                           "series": [[s.get("seriesLetter"), r.get("roundNumber"),
+                                       s["topSeed"]["abbrev"], s["topSeed"].get("wins", 0),
+                                       s["bottomSeed"]["abbrev"], s["bottomSeed"].get("wins", 0)]
+                                      for r in rounds for s in r.get("series", [])]}
+                break
+
+    write("nhl.json", {"upd": now_utc(), "season": season, "phase": phase,
+                       "standings": standings, "team": team, "scores": scores, "bracket": bracket})
 
 
 # ── Alpine skiing (FIS World Cup) ───────────────────────────────────────────────
@@ -185,6 +221,19 @@ FIS = "https://www.fis-ski.com/DB"
 DISC = {"Downhill": "DH", "Super G": "SG", "Giant Slalom": "GS", "Slalom": "SL",
         "Alpine combined": "AC", "Alpine Combined": "AC", "Team Combined": "TC", "Parallel": "PAR",
         "Parallel Giant Slalom": "PGS", "Parallel Slalom": "PSL", "Team Parallel": "TP"}
+
+
+# FIS writes venue names in ASCII ("Soelden", "Kitzbuehel") and sometimes long ("Val Gardena-
+# Groeden Südtirol"). Proper spelling for the display; unknown names pass through unchanged.
+# Only Latin-1 + Serbian letters render on the device (č ć š ž đ, ä ö ü é è å ...).
+PLACES = {
+    "Soelden": "Sölden", "Kitzbuehel": "Kitzbühel", "Are": "Åre", "Val d'Isere": "Val d'Isère",
+    "Jasna": "Jasná", "Copper Mountain, CO": "Copper Mountain", "Narvik (TBC)": "Narvik",
+    "Val Gardena-Groeden Südtirol": "Val Gardena", "Dachstein West / Gosau": "Gosau",
+    "Garmisch-Partenkirchen": "Garmisch", "Cortina d'Ampezzo": "Cortina", "Madonna di Campiglio": "Campiglio",
+    "Spindleruv Mlyn": "Špindlerův Mlýn", "Zauchensee": "Zauchensee", "Meribel": "Méribel",
+    "Crans Montana": "Crans-Montana", "Lake Louise": "Lake Louise", "Semmering": "Semmering",
+}
 
 
 def get_text(url, tries=3):
@@ -236,7 +285,8 @@ def ski_races(season):
             continue
         gender = "W" if "Gender: Women" in desc else ("M" if "Gender: Men" in desc else "X")
         disc = m.group(3).strip()
-        races.append({"d": f"{date[:4]}-{date[4:6]}-{date[6:]}", "p": m.group(1).strip(), "c": m.group(2),
+        place = m.group(1).strip()
+        races.append({"d": f"{date[:4]}-{date[4:6]}-{date[6:]}", "p": PLACES.get(place, place), "c": m.group(2),
                       "disc": DISC.get(disc, disc[:3].upper()), "g": gender, "id": int(rid.group(1))})
     races.sort(key=lambda r: (r["d"], r["g"]))
     return races
