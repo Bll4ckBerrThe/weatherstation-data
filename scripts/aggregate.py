@@ -233,6 +233,100 @@ def nhl():
                        "standings": standings, "team": team, "scores": scores, "bracket": bracket})
 
 
+# ── NHL team pages: one small file per team (data/nhl/<ABBR>.json) ──────────────
+# The display has a team selector, so every team gets: season record + standings place, last
+# 10 / next 8 games, every goal of the last game, top scorers + goalies, and franchise history
+# (first season, all-time records, Stanley Cups, last seasons with playoff result).
+RECORDS = "https://records.nhl.com/site/api"
+
+
+def nhl_team_file(abbr, row, franchise):
+    sched = get_json(f"{NHL}/club-schedule-season/{abbr}/now")
+    games = [g for g in sched.get("games", []) if g.get("gameType") in (2, 3)]
+    played = [g for g in games if g.get("gameState") in ("OFF", "FINAL")]
+    future = [g for g in games if g.get("gameState") in ("FUT", "PRE", "LIVE", "CRIT")]
+    out = {"upd": now_utc(), "abbr": abbr, "row": row,
+           "last": [nhl_game(g) for g in played[-10:]], "next": [nhl_game(g) for g in future[:8]]}
+
+    # Every goal of the most recent finished game
+    if played:
+        try:
+            L = get_json(f"{NHL}/gamecenter/{played[-1]['id']}/landing")
+            goals = []
+            for p in L.get("summary", {}).get("scoring", []):
+                pd = p["periodDescriptor"]
+                per = "OT" if pd.get("periodType") == "OT" else ("SO" if pd.get("periodType") == "SO" else str(pd["number"]))
+                for g in p.get("goals", []):
+                    goals.append([per, g.get("timeInPeriod", ""), (g.get("teamAbbrev") or {}).get("default", ""),
+                                  ((g.get("firstName") or {}).get("default", "")[:1] + ". " + (g.get("lastName") or {}).get("default", "")).strip(". "),
+                                  [(a.get("lastName") or {}).get("default", "") for a in g.get("assists", [])],
+                                  g.get("strength", ""), g.get("awayScore"), g.get("homeScore")])
+            out["lastGame"] = {"id": L["id"], "away": L["awayTeam"]["abbrev"], "home": L["homeTeam"]["abbrev"],
+                               "as": L["awayTeam"].get("score"), "hs": L["homeTeam"].get("score"),
+                               "asog": L["awayTeam"].get("sog"), "hsog": L["homeTeam"].get("sog"),
+                               "start": L["startTimeUTC"][:16] + "Z", "goals": goals}
+        except Exception as e:
+            print(f"  {abbr} last game failed:", e)
+
+    try:
+        cs = get_json(f"{NHL}/club-stats/{abbr}/now")
+        sk = sorted(cs.get("skaters", []), key=lambda s: (-s.get("points", 0), -s.get("goals", 0)))[:5]
+        out["skaters"] = [[s["firstName"]["default"][:1] + ". " + s["lastName"]["default"], s.get("positionCode", ""),
+                           s.get("gamesPlayed", 0), s.get("goals", 0), s.get("assists", 0), s.get("points", 0)] for s in sk]
+        gl = sorted(cs.get("goalies", []), key=lambda s: -s.get("gamesPlayed", 0))[:2]
+        out["goalies"] = [[s["firstName"]["default"][:1] + ". " + s["lastName"]["default"], s.get("gamesPlayed", 0),
+                           round(s.get("savePercentage") or 0, 3), round(s.get("goalsAgainstAverage") or 0, 2)] for s in gl]
+    except Exception as e:
+        print(f"  {abbr} club stats failed:", e)
+
+    if franchise:
+        try:
+            hist = {"name": franchise["fullName"], "first": franchise["firstSeasonId"]}
+            tot = get_json(f"{RECORDS}/franchise-team-totals?cayenneExp=teamId={franchise['mostRecentTeamId']}")["data"]
+            for t in tot:
+                key = "reg" if t["gameTypeId"] == 2 else "po"
+                hist[key] = [t["gamesPlayed"], t["wins"], t["losses"], (t.get("ties") or 0) + (t.get("otLosses") or 0)]
+            res = get_json(f"{RECORDS}/franchise-season-results?cayenneExp=franchiseId={franchise['id']}")["data"]
+            cups = sorted(r["seasonId"] for r in res if r.get("gameTypeId") == 3 and r.get("decision") == "W")
+            hist["cups"], hist["lastCup"] = len(cups), (cups[-1] if cups else None)
+            po = {r["seasonId"]: r for r in res if r.get("gameTypeId") == 3}
+            seasons = []
+            for r in sorted((r for r in res if r.get("gameTypeId") == 2), key=lambda r: r["seasonId"])[-6:]:
+                p = po.get(r["seasonId"])
+                # playoff result: None = missed, else [round reached, won-that-round?, series title]
+                seasons.append([r["seasonId"], r.get("wins"), r.get("losses"),
+                                (r.get("overtimeLosses") or 0) + (r.get("ties") or 0), r.get("points"),
+                                r.get("divisionSequence"),
+                                [p.get("playoffRound"), p.get("decision"), p.get("seriesTitle")] if p else None])
+            hist["seasons"] = seasons
+            out["hist"] = hist
+        except Exception as e:
+            print(f"  {abbr} history failed:", e)
+
+    os.makedirs(os.path.join(OUT, "nhl"), exist_ok=True)
+    write(os.path.join("nhl", f"{abbr}.json"), out)
+
+
+def nhl_teams():
+    st = get_json(f"{NHL}/standings/now")["standings"]
+    rows = {t["teamAbbrev"]["default"]: [t["teamName"]["default"], t["conferenceAbbrev"], t["divisionAbbrev"],
+                                         t["gamesPlayed"], t["wins"], t["losses"], t["otLosses"], t["points"],
+                                         t["leagueSequence"], t["conferenceSequence"], t["divisionSequence"],
+                                         t.get("goalFor", 0), t.get("goalAgainst", 0),
+                                         (t.get("streakCode") or "") + str(t.get("streakCount") or "")] for t in st}
+    fr = {f["teamAbbrev"]: f for f in get_json(f"{RECORDS}/franchise")["data"] if f.get("lastSeasonId") is None}
+    failed = []
+    for abbr in sorted(rows):
+        try:
+            nhl_team_file(abbr, rows[abbr], fr.get(abbr))
+        except Exception as e:
+            failed.append(abbr)
+            print(f"  team {abbr} FAILED:", e)
+        time.sleep(0.3)                      # be gentle: ~5 requests per team
+    if len(failed) == len(rows):
+        raise RuntimeError("all team files failed")
+
+
 # ── Alpine skiing (FIS World Cup) ───────────────────────────────────────────────
 # FIS has no public API. Sources: the season iCal feed (all races, current season only), the
 # per-race results/start-list page (results; "1st Run: 10:00 CET" start times) and the cup
@@ -419,7 +513,7 @@ def ski():
 
 
 if __name__ == "__main__":
-    which = sys.argv[1:] or ["f1", "nhl", "ski"]
+    which = sys.argv[1:] or ["f1", "nhl", "nhl_teams", "ski"]
     failed = []
     for name in which:
         print(f"[{name}]")
