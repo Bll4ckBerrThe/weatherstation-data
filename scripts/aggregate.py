@@ -289,6 +289,7 @@ def nhl_team_file(abbr, row, franchise):
             res = get_json(f"{RECORDS}/franchise-season-results?cayenneExp=franchiseId={franchise['id']}")["data"]
             cups = sorted(r["seasonId"] for r in res if r.get("gameTypeId") == 3 and r.get("decision") == "W")
             hist["cups"], hist["lastCup"] = len(cups), (cups[-1] if cups else None)
+            hist["cupYears"] = [c // 10000 + 1 for c in cups]          # 19921993 -> 1993 (year the Cup was won)
             po = {r["seasonId"]: r for r in res if r.get("gameTypeId") == 3}
             seasons = []
             for r in sorted((r for r in res if r.get("gameTypeId") == 2), key=lambda r: r["seasonId"])[-6:]:
