@@ -287,7 +287,10 @@ def nhl_team_file(abbr, row, franchise):
                 key = "reg" if t["gameTypeId"] == 2 else "po"
                 hist[key] = [t["gamesPlayed"], t["wins"], t["losses"], (t.get("ties") or 0) + (t.get("otLosses") or 0)]
             res = get_json(f"{RECORDS}/franchise-season-results?cayenneExp=franchiseId={franchise['id']}")["data"]
-            cups = sorted(r["seasonId"] for r in res if r.get("gameTypeId") == 3 and r.get("decision") == "W")
+            # Won the season's last playoff series = Stanley Cup — except 1918/19, when the Cup final
+            # was cancelled (influenza) and no Cup was awarded. NHL era only (Montréal's 1916 Cup predates the NHL).
+            cups = sorted(r["seasonId"] for r in res if r.get("gameTypeId") == 3 and r.get("decision") == "W"
+                          and r["seasonId"] != 19181919)
             hist["cups"], hist["lastCup"] = len(cups), (cups[-1] if cups else None)
             hist["cupYears"] = [c // 10000 + 1 for c in cups]          # 19921993 -> 1993 (year the Cup was won)
             po = {r["seasonId"]: r for r in res if r.get("gameTypeId") == 3}
