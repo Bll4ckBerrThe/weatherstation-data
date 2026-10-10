@@ -68,37 +68,10 @@ def short_gp(name):
     return name.replace(" Grand Prix", "").replace("Grand Prix", "GP").strip()
 
 
-# Display names in Serbian (Latin): the country, or the city when a country hosts several races
-# in the season (USA: Miami/Austin/Las Vegas, Spain: Barcelona/Madrid). Unknown -> English name.
-F1_COUNTRY_SR = {
-    "Australia": "Australija", "China": "Kina", "Japan": "Japan", "Canada": "Kanada", "Monaco": "Monako",
-    "Austria": "Austrija", "UK": "V. Britanija", "Belgium": "Belgija", "Hungary": "Mađarska",
-    "Netherlands": "Holandija", "Italy": "Italija", "Azerbaijan": "Azerbejdžan", "Malaysia": "Malezija",
-    "Singapore": "Singapur", "Mexico": "Meksiko", "Brazil": "Brazil", "Qatar": "Katar", "UAE": "Abu Dabi",
-    "Bahrain": "Bahrein", "Saudi Arabia": "S. Arabija", "Portugal": "Portugalija", "France": "Francuska",
-    "Germany": "Nemačka", "Turkey": "Turska", "Russia": "Rusija", "South Africa": "J. Afrika",
-    "Argentina": "Argentina", "Korea": "Koreja", "India": "Indija", "Vietnam": "Vijetnam",
-    "Spain": "Španija", "USA": "SAD",
-}
-F1_CITY_SR = {"Miami": "Majami", "Austin": "Ostin", "Las Vegas": "Las Vegas", "Barcelona": "Barselona",
-              "Madrid": "Madrid", "Imola": "Imola", "Monza": "Monca", "Mexico City": "Meksiko Siti",
-              "São Paulo": "Sao Paolo", "Montreal": "Montreal"}
-
-
-def name_sr(race, multi):
-    loc = race["Circuit"]["Location"]
-    if loc["country"] in multi:
-        return F1_CITY_SR.get(loc["locality"], loc["locality"])
-    return F1_COUNTRY_SR.get(loc["country"], short_gp(race["raceName"]))
-
-
 def f1():
     races = get_json(f"{F1}/current/races/?format=json&limit=100")["MRData"]["RaceTable"]
     season = int(races["season"])
     races = races["Races"]
-    from collections import Counter
-    multi = {c for c, k in Counter(r["Circuit"]["Location"]["country"] for r in races).items() if k > 1}
-    sr_by_round = {int(r["round"]): name_sr(r, multi) for r in races}
     winners = {}
     try:
         res = get_json(f"{F1}/current/results/1/?format=json&limit=100")["MRData"]["RaceTable"]["Races"]
@@ -116,13 +89,13 @@ def f1():
         rnd = int(r["round"])
         sprint = "Sprint" in r
         start = utc(r["date"], r.get("time") or "23:59:00Z")
-        cal.append({"r": rnd, "n": sr_by_round[rnd], "c": r["Circuit"]["Location"]["country"],
+        cal.append({"r": rnd, "n": short_gp(r["raceName"]), "c": r["Circuit"]["Location"]["country"],
                     "d": utc(r["date"], r.get("time")), "s": 1 if sprint else 0, "w": winners.get(rnd)})
         if nxt is None and start > cutoff:
             sess = [[lab, utc(r[k]["date"], r[k].get("time"))] for k, lab in SESSION_KEYS if k in r]
             sess.append(["R", utc(r["date"], r.get("time"))])
             sess.sort(key=lambda s: s[1] or "")
-            nxt = {"r": rnd, "n": sr_by_round[rnd], "cir": r["Circuit"]["circuitName"],
+            nxt = {"r": rnd, "n": short_gp(r["raceName"]), "cir": r["Circuit"]["circuitName"],
                    "loc": r["Circuit"]["Location"]["locality"], "c": r["Circuit"]["Location"]["country"],
                    "sess": sess}
     # Qualifying grid of the next race, once it exists
@@ -150,8 +123,7 @@ def f1():
         lr = get_json(f"{F1}/current/last/results/?format=json")["MRData"]["RaceTable"]["Races"]
         if lr:
             lr = lr[0]
-            last = {"r": int(lr["round"]), "n": sr_by_round.get(int(lr["round"]), short_gp(lr["raceName"])),
-                    "d": utc(lr["date"], lr.get("time")),
+            last = {"r": int(lr["round"]), "n": short_gp(lr["raceName"]), "d": utc(lr["date"], lr.get("time")),
                     "top": [[int(x["position"]), x["Driver"]["code"], x["Driver"]["familyName"],
                              x["Constructor"]["constructorId"],
                              (x.get("Time") or {}).get("time") or x["status"], float(x["points"])]
