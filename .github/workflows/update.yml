@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "30 4 * * *"    # 06:30 local summer time: last night's NHL results, overnight F1 changes
     - cron: "0 18 * * *"    # 20:00 local: same-day F1 sessions and ski results
+    - cron: "40 * * * 5,6,0"  # hourly Fri-Sun (UTC): F1 sprint/qualifying/race and ski results soon after they finish
   workflow_dispatch: {}     # manual run from the Actions tab
 
 permissions:
