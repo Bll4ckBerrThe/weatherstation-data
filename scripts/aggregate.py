@@ -173,17 +173,31 @@ def nhl():
     future = [g for g in games if g.get("gameState") in ("FUT", "PRE", "LIVE", "CRIT")]
     team = {"abbr": NHL_TEAM, "last": [nhl_game(g) for g in played[-5:]], "next": [nhl_game(g) for g in future[:8]]}
 
-    # Last night's / today's league scores (European morning = North American night)
+    # Scores seen from Europe: "last" = games of North American date D-1 (finished overnight here),
+    # "tonight" = games of NA date D (they start ~01:00-04:00 our time). D = today's UTC date; the
+    # workflow runs 04:30 and 18:00 UTC, both well after the previous NA night has ended.
     scores = {}
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    for key, day in (("last", today - datetime.timedelta(days=1)), ("tonight", today)):
+        try:
+            sc = get_json(f"{NHL}/score/{day.isoformat()}")
+            scores[key] = {"date": day.isoformat(), "games": [nhl_game(g) for g in sc.get("games", [])]}
+        except Exception as e:
+            print(f"  NHL scores {key} failed:", e)
+
+    # Followed team's leaders: top 5 skaters by points, plus goalies with games played
+    leaders = {}
     try:
-        sc = get_json(f"{NHL}/score/now")
-        scores = {"date": sc.get("currentDate"), "games": [nhl_game(g) for g in sc.get("games", [])]}
-        prev = sc.get("prevDate")
-        if prev:
-            sp = get_json(f"{NHL}/score/{prev}")
-            scores["prev"] = {"date": prev, "games": [nhl_game(g) for g in sp.get("games", [])]}
+        cs = get_json(f"{NHL}/club-stats/{NHL_TEAM}/now")
+        sk = sorted(cs.get("skaters", []), key=lambda s: (-s.get("points", 0), -s.get("goals", 0)))[:5]
+        leaders["skaters"] = [[s["firstName"]["default"][:1] + ". " + s["lastName"]["default"], s.get("positionCode", ""),
+                               s.get("gamesPlayed", 0), s.get("goals", 0), s.get("assists", 0), s.get("points", 0)] for s in sk]
+        gl = sorted(cs.get("goalies", []), key=lambda s: -s.get("gamesPlayed", 0))[:2]
+        leaders["goalies"] = [[s["firstName"]["default"][:1] + ". " + s["lastName"]["default"], s.get("gamesPlayed", 0),
+                               round(s.get("savePercentage") or 0, 3), round(s.get("goalsAgainstAverage") or 0, 2)] for s in gl]
     except Exception as e:
-        print("  NHL scores failed:", e)
+        print("  NHL club stats failed:", e)
+    team["leaders"] = leaders
 
     # Phase: "regular" (division table) / "playoffs" (bracket, live) / "final" (off-season: last
     # season's finished bracket until the new regular season has games). The carousel endpoint
