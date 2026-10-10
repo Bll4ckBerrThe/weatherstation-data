@@ -195,16 +195,15 @@ def nhl():
         except Exception as e:
             print("  NHL playoffs check failed (treated as regular season):", e)
             break
-        if True:
-            rounds = car.get("rounds") or []
-            if rounds:
-                phase = ph
-                bracket = {"season": sid, "round": car.get("currentRound"),
-                           "series": [[s.get("seriesLetter"), r.get("roundNumber"),
-                                       s["topSeed"]["abbrev"], s["topSeed"].get("wins", 0),
-                                       s["bottomSeed"]["abbrev"], s["bottomSeed"].get("wins", 0)]
-                                      for r in rounds for s in r.get("series", [])]}
-                break
+        rounds = car.get("rounds") or []
+        if rounds:
+            phase = ph
+            bracket = {"season": sid, "round": car.get("currentRound"),
+                       "series": [[s.get("seriesLetter"), r.get("roundNumber"),
+                                   s["topSeed"]["abbrev"], s["topSeed"].get("wins", 0),
+                                   s["bottomSeed"]["abbrev"], s["bottomSeed"].get("wins", 0)]
+                                  for r in rounds for s in r.get("series", [])]}
+            break
 
     write("nhl.json", {"upd": now_utc(), "season": season, "phase": phase,
                        "standings": standings, "team": team, "scores": scores, "bracket": bracket})
