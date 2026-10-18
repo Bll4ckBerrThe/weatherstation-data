@@ -516,6 +516,103 @@ def ski():
                        "races": cal, "last": last, "stand": stand})
 
 
+
+# ── News for the in4md app (2026-10-17) ─────────────────────────────────────────
+# Film/TV, book and music headlines from public RSS feeds → data/news.json (newest first, max 20
+# per area). If the DEEPL_KEY secret is set, new headlines also get a Serbian title ("sr"),
+# cached in data/news_tr.json so each headline is translated once (DeepL Free: 500k chars/month).
+NEWS_FEEDS = [
+    ("film", "Variety", "https://variety.com/feed/"),
+    ("film", "Deadline", "https://deadline.com/feed/"),
+    ("books", "The Guardian", "https://www.theguardian.com/books/rss"),
+    ("books", "Book Riot", "https://bookriot.com/feed/"),
+    ("music", "The Guardian", "https://www.theguardian.com/music/rss"),
+    ("music", "NME", "https://www.nme.com/news/music/feed"),
+]
+
+
+def _rss_items(xml_bytes):
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    root = ET.fromstring(xml_bytes)
+    MEDIA = "{http://search.yahoo.com/mrss/}"
+    out = []
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        if not title or not link:
+            continue
+        try:
+            d = parsedate_to_datetime(it.findtext("pubDate")).astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        except Exception:
+            d = now_utc()
+        img = None
+        for tag in (MEDIA + "thumbnail", MEDIA + "content"):
+            el = it.find(tag)
+            if el is not None and el.get("url"):
+                img = el.get("url")
+        enc = it.find("enclosure")
+        if not img and enc is not None and (enc.get("type") or "").startswith("image"):
+            img = enc.get("url")
+        out.append({"t": title, "u": link, "d": d, **({"img": img} if img else {})})
+    return out
+
+
+def _deepl_sr(texts, key):
+    body = json.dumps({"text": texts, "target_lang": "SR"}).encode()   # DeepL Serbian; converted to Latin below
+    host = "api-free.deepl.com" if key.endswith(":fx") else "api.deepl.com"
+    req = urllib.request.Request(f"https://{host}/v2/translate", data=body, method="POST",
+                                 headers={"Authorization": f"DeepL-Auth-Key {key}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return [t["text"] for t in json.load(r)["translations"]]
+
+
+def news():
+    items = []
+    for k, src, url in NEWS_FEEDS:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (in4md news)"}), timeout=30) as r:
+                for x in _rss_items(r.read())[:15]:
+                    items.append({**x, "s": src, "k": k})
+        except Exception as e:
+            print(f"  feed {src} {k} failed: {e}")
+    if not items:
+        raise RuntimeError("no news")
+    items.sort(key=lambda x: x["d"], reverse=True)
+    per = {}
+    keep = []
+    for x in items:                       # max 20 per area
+        per[x["k"]] = per.get(x["k"], 0) + 1
+        if per[x["k"]] <= 20:
+            keep.append(x)
+    key = os.environ.get("DEEPL_KEY", "").strip()
+    trp = os.path.join(OUT, "news_tr.json")
+    cache = json.load(open(trp, encoding="utf-8")) if os.path.exists(trp) else {}
+    if key:
+        todo = [x["t"] for x in keep if x["t"] not in cache]
+        try:
+            for i in range(0, len(todo), 40):
+                for src, tr in zip(todo[i:i + 40], _deepl_sr(todo[i:i + 40], key)):
+                    cache[src] = tr
+        except Exception as e:
+            print(f"  DeepL failed: {e}")
+        cache = {t: cache[t] for t in [x["t"] for x in keep] if t in cache}   # forget old headlines
+        write("news_tr.json", cache)
+    for x in keep:
+        if x["t"] in cache:
+            x["sr"] = _to_latin(cache[x["t"]])
+    write("news.json", {"upd": now_utc(), "items": keep})
+
+
+_CYR = dict(zip("АБВГДЂЕЖЗИЈКЛЉМНЊОПРСТЋУФХЦЧЏШабвгдђежзијклљмнњопрстћуфхцчџш",
+                ["A", "B", "V", "G", "D", "Đ", "E", "Ž", "Z", "I", "J", "K", "L", "Lj", "M", "N", "Nj", "O", "P", "R", "S", "T", "Ć", "U", "F", "H", "C", "Č", "Dž", "Š",
+                 "a", "b", "v", "g", "d", "đ", "e", "ž", "z", "i", "j", "k", "l", "lj", "m", "n", "nj", "o", "p", "r", "s", "t", "ć", "u", "f", "h", "c", "č", "dž", "š"]))
+
+
+def _to_latin(s):
+    """DeepL may answer in Serbian Cyrillic; the app (and family) use Latin."""
+    return "".join(_CYR.get(ch, ch) for ch in s)
+
 if __name__ == "__main__":
     which = sys.argv[1:] or ["f1", "nhl", "nhl_teams", "ski"]
     failed = []

@@ -26,4 +26,4 @@ jobs:
           git config user.name "sports-data-bot"
           git config user.email "actions@users.noreply.github.com"
           git add data/
-          if git diff --cached --quiet; then echo "no changes"; else git commit -m "data: $(date -u +%Y-%m-%dT%H:%MZ)" && git push; fi
+          if git diff --cached --quiet; then echo "no changes"; else git commit -m "data: $(date -u +%Y-%m-%dT%H:%MZ)" && git pull --rebase -q && git push; fi

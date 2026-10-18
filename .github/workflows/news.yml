@@ -1,0 +1,29 @@
+name: Update media news
+
+on:
+  schedule:
+    - cron: "20 */3 * * *"   # every 3 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Aggregate news (standard library only)
+        env:
+          DEEPL_KEY: ${{ secrets.DEEPL_KEY }}   # optional: Serbian headline titles
+        run: python scripts/aggregate.py news
+      - name: Commit changed data
+        run: |
+          git config user.name "sports-data-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then echo "no changes"; else git commit -m "news: $(date -u +%Y-%m-%dT%H:%MZ)" && git pull --rebase -q && git push; fi
