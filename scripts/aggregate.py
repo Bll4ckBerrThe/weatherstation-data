@@ -147,6 +147,133 @@ def f1():
                       "next": nxt, "last": last, "drivers": drivers, "teams": teams, "cal": cal})
 
 
+# ── F1 race analysis for the in4md app (2026-10-18) ────────────────────────────
+# OpenF1 (free historical API, no key; the official live-timing archive FastF1 uses answers 401
+# since 2025). Last race only: tyre strategy, position per lap, pit stops, fastest lap, safety cars,
+# weather, overtakes → data/f1_race.json (~5 KB). Fetched again for 48 h after the race (late
+# corrections), then skipped until the next race.
+OF1 = "https://api.openf1.org/v1"
+F1RACE_V = 1   # bump when the file format changes → the last race is fetched again
+
+
+def _of1(ep, **q):
+    time.sleep(0.4)   # free tier: max 3 requests/s
+    qs = "&".join(f"{k}={v}" for k, v in q.items())
+    try:
+        return get_json(f"{OF1}/{ep}?{qs}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return []   # OpenF1 answers 404 "No results found" for an empty list
+        raise
+
+
+def _ts(s):
+    return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+
+
+def f1race():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    races = [s for s in _of1("sessions", year=now.year, session_name="Race")
+             if not s.get("is_cancelled") and _ts(s["date_end"]) + datetime.timedelta(hours=1) < now]
+    if not races:
+        print("  no finished race yet")
+        return
+    ses = max(races, key=lambda s: s["date_start"])
+    sk = ses["session_key"]
+    try:
+        old = json.load(open(os.path.join(OUT, "f1_race.json"), encoding="utf-8"))
+    except Exception:
+        old = {}
+    if old.get("sk") == sk and old.get("v") == F1RACE_V and now - _ts(ses["date_end"]) > datetime.timedelta(hours=48):
+        print(f"  {ses['country_name']} unchanged (sk {sk})")
+        return
+
+    drivers = {d["driver_number"]: d for d in _of1("drivers", session_key=sk)}
+    result = _of1("session_result", session_key=sk)
+    stints = _of1("stints", session_key=sk)
+    pits = _of1("pit", session_key=sk)
+    laps = _of1("laps", session_key=sk)
+    pos = _of1("position", session_key=sk)
+    rc = _of1("race_control", session_key=sk)
+    wx = _of1("weather", session_key=sk)
+    try:
+        ovt = _of1("overtakes", session_key=sk)
+    except Exception:
+        ovt = []
+    if not result or not laps:
+        raise RuntimeError(f"OpenF1 has no result/laps for sk {sk} yet")
+
+    # position timeline per driver (the feed only sends changes); grid = first entry
+    tl = {}
+    for p in sorted(pos, key=lambda p: p["date"]):
+        tl.setdefault(p["driver_number"], []).append((_ts(p["date"]), p["position"]))
+
+    def pos_at(n, t):
+        v = None
+        for d, x in tl.get(n, []):
+            if d > t:
+                break
+            v = x
+        return v
+
+    by_drv = {}
+    for l in laps:
+        by_drv.setdefault(l["driver_number"], []).append(l)
+    best = None
+    out = []
+    for r in sorted(result, key=lambda r: (r.get("position") or 99, r["driver_number"])):
+        n = r["driver_number"]
+        d = drivers.get(n, {})
+        ls = sorted(by_drv.get(n, []), key=lambda l: l["lap_number"])
+        per_lap = []
+        for i, l in enumerate(ls):
+            end = _ts(ls[i + 1]["date_start"]) if i + 1 < len(ls) and ls[i + 1].get("date_start") else \
+                (_ts(l["date_start"]) + datetime.timedelta(seconds=l["lap_duration"]) if l.get("date_start") and l.get("lap_duration") else None)
+            per_lap.append(pos_at(n, end) if end else (per_lap[-1] if per_lap else None))
+        times = [l["lap_duration"] for l in ls if l.get("lap_duration") and not l.get("is_pit_out_lap")]
+        bl = min(times) if times else None
+        if bl and (best is None or bl < best[1]):
+            best = (d.get("name_acronym", str(n)), bl, next(l["lap_number"] for l in ls if l.get("lap_duration") == bl))
+        st = "DSQ" if r.get("dsq") else "DNS" if r.get("dns") else "DNF" if r.get("dnf") else None
+        gap = r.get("gap_to_leader")
+        out.append({
+            "n": n, "a": d.get("name_acronym", str(n)), "nm": (d.get("last_name") or "").title(),
+            "tm": d.get("team_name"), "c": d.get("team_colour"),
+            "p": r.get("position"), "g": tl[n][0][1] if tl.get(n) else None, "st": st,
+            "pts": r.get("points"), "laps": r.get("number_of_laps"),
+            "gap": gap if isinstance(gap, str) else (round(gap, 3) if gap else None),
+            "best": round(bl, 3) if bl else None,
+            "pit": sum(1 for p in pits if p["driver_number"] == n),
+            "ov": sum(1 for o in ovt if o.get("overtaking_driver_number") == n),
+            "s": [[(s.get("compound") or "?")[0], s["lap_start"], s["lap_end"]]
+                  for s in sorted((s for s in stints if s["driver_number"] == n), key=lambda s: s["stint_number"])
+                  if s.get("lap_start") and s.get("lap_end")],
+            "pl": per_lap,
+        })
+
+    # stationary time when OpenF1 has it, otherwise the pit-lane time ("lane": True)
+    lane = not any(p.get("stop_duration") for p in pits)
+    stops = [(p.get("pit_duration") if lane else p.get("stop_duration"), p) for p in pits]
+    fast = min((x for x in stops if x[0]), key=lambda x: x[0], default=None)
+    sc = []
+    for m in rc:
+        msg = (m.get("message") or "").upper()
+        if "SAFETY CAR DEPLOYED" in msg or m.get("flag") == "RED":
+            sc.append([m.get("lap_number"), "VSC" if "VIRTUAL" in msg else "RED" if m.get("flag") == "RED" else "SC"])
+    air = [w["air_temperature"] for w in wx if w.get("air_temperature") is not None]
+    trk = [w["track_temperature"] for w in wx if w.get("track_temperature")]   # 0.0 = sensor gap
+    write("f1_race.json", {
+        "upd": now_utc(), "v": F1RACE_V, "sk": sk, "n": short_gp(ses.get("country_name", "")), "loc": ses.get("location"),
+        "d": ses["date_start"][:16] + "Z", "laps": max((r.get("number_of_laps") or 0) for r in result),
+        "fl": [best[0], round(best[1], 3), best[2]] if best else None,
+        "fp": [drivers.get(fast[1]["driver_number"], {}).get("name_acronym"), round(fast[0], 1), fast[1].get("lap_number"), lane] if fast else None,
+        "sc": sc, "ov": len(ovt),
+        "wx": {"air": [min(air), max(air)] if air else None, "trk": [min(trk), max(trk)] if trk else None,
+               "rain": any(w.get("rainfall") for w in wx)},
+        "drv": out,
+    })
+
+
 # ── NHL ─────────────────────────────────────────────────────────────────────────
 NHL = "https://api-web.nhle.com/v1"
 

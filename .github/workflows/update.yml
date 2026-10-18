@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Aggregate (standard library only)
-        run: python scripts/aggregate.py f1 nhl ski
+        run: python scripts/aggregate.py f1 f1race nhl ski
       - name: Commit changed data
         run: |
           git config user.name "sports-data-bot"
